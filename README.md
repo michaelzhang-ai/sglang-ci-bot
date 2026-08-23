@@ -898,7 +898,11 @@ sglang-ci-bot/
                               report without intercepting PR commands.
   .state/                   Persisted state files (gitignored)
   .secrets/                 Local secret files (gitignored): claude.env, llm_gateway_key, gh_pat
-  requirements.txt          Python dependencies: anthropic, httpx, requests
+  requirements.txt          Python dependencies: anthropic, httpx, requests.
+                              anthropic is capped below 1.0 — 1.x rejects the
+                              httpx.Client that create_anthropic_client()
+                              passes and demands httpx2.Client, so an
+                              uncapped fresh install breaks API mode.
 ```
 
 ---
