@@ -22,7 +22,24 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
-REPO="bingxche/sglang-ci-bot"
+# Default to whatever repo this checkout came from, so deploying from a fork
+# registers runners on the fork rather than on upstream. Override with --repo.
+detect_repo() {
+    local url
+    url="$(git -C "$REPO_DIR" config --get remote.origin.url 2>/dev/null)" || return 0
+    url="${url%.git}"
+    url="${url#git@github.com:}"
+    url="${url#ssh://git@github.com/}"
+    url="${url#https://}"
+    url="${url#http://}"
+    url="${url#*@}"
+    url="${url#github.com/}"
+    [[ "$url" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 0
+    printf '%s' "$url"
+}
+
+REPO="$(detect_repo)"
+REPO="${REPO:-bingxche/sglang-ci-bot}"
 RUNNER_NAME="amd-ci-bot-runner"
 GH_PAT=""
 BOT_PAT=""
@@ -37,6 +54,8 @@ RUNNER_COUNT=10
 POLL_INTERVAL=15
 CLAUDE_ENV_FILE=""
 USE_AGENT=false
+ENABLE_WATCHER=true
+ENABLE_CI_MONITOR=true
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -51,6 +70,8 @@ while [[ $# -gt 0 ]]; do
         --build)           FORCE_BUILD=true; shift ;;
         --claude-env)      CLAUDE_ENV_FILE="$2"; shift 2 ;;
         --use-agent)       USE_AGENT=true; shift ;;
+        --no-watcher)      ENABLE_WATCHER=false; shift ;;
+        --no-ci-monitor)   ENABLE_CI_MONITOR=false; shift ;;
         *)                 echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -156,9 +177,13 @@ for i in $(seq 1 "$RUNNER_COUNT"); do
         fi
     fi
 
-    # Runner-1 specific: comment watcher daemon
+    # Runner-1 specific: comment watcher daemon + CI monitor dispatch loop
     if [ "$i" -eq 1 ]; then
-        EXTRA_ARGS+=(-e ENABLE_WATCHER=true -e POLL_INTERVAL="${POLL_INTERVAL}")
+        EXTRA_ARGS+=(
+            -e ENABLE_WATCHER="${ENABLE_WATCHER}"
+            -e ENABLE_CI_MONITOR="${ENABLE_CI_MONITOR}"
+            -e POLL_INTERVAL="${POLL_INTERVAL}"
+        )
         if [ -n "$BOT_PAT" ]; then
             EXTRA_ARGS+=(-e BOT_PAT="${BOT_PAT}")
         fi
@@ -186,8 +211,16 @@ echo "============================================"
 echo "  ${RUNNER_COUNT} runners deployed successfully!"
 echo "============================================"
 echo "  Containers  : ${RUNNER_NAME}-{1..${RUNNER_COUNT}}"
-echo "  Watcher     : ${RUNNER_NAME}-1 (comment daemon, poll ${POLL_INTERVAL}s)"
-echo "  CI Monitor  : ${RUNNER_NAME}-1 (workflow_dispatch trigger, every 15min)"
+if [ "$ENABLE_WATCHER" = true ]; then
+    echo "  Watcher     : ${RUNNER_NAME}-1 (comment daemon, poll ${POLL_INTERVAL}s)"
+else
+    echo "  Watcher     : disabled (--no-watcher)"
+fi
+if [ "$ENABLE_CI_MONITOR" = true ]; then
+    echo "  CI Monitor  : ${RUNNER_NAME}-1 (workflow_dispatch trigger, every 30min)"
+else
+    echo "  CI Monitor  : disabled (--no-ci-monitor); ci-monitor.yml cron still runs"
+fi
 echo "  Repo        : ${REPO}"
 echo "  Labels     : self-hosted, amd-internal"
 echo "  Entrypoint : ${ENTRYPOINT_PATH} (bind-mounted, restart to apply changes)"

@@ -127,13 +127,32 @@ def get_failed_jobs(token: str, run_id: int) -> list[dict]:
 # Anthropic client
 # ---------------------------------------------------------------------------
 
+class LLMGatewayNotConfigured(RuntimeError):
+    """Raised when API mode is reached without AMD LLM Gateway credentials.
+
+    Distinguishes "this deployment has no LLM access" from a genuine gateway
+    error, so callers can degrade instead of failing the whole run.
+    """
+
+
 def create_anthropic_client() -> anthropic.Anthropic:
     """Create Anthropic client via AMD LLM Gateway.
 
     Env vars:
       - LLM_GATEWAY_KEY (required) — gateway subscription key
       - LLM_GATEWAY_URL (required) — gateway endpoint
+
+    Raises:
+      LLMGatewayNotConfigured: if either env var is missing or empty.
     """
+    missing = [
+        name for name in ("LLM_GATEWAY_URL", "LLM_GATEWAY_KEY")
+        if not os.environ.get(name)
+    ]
+    if missing:
+        raise LLMGatewayNotConfigured(
+            f"API mode requires {' and '.join(missing)} to be set"
+        )
     return anthropic.Anthropic(
         base_url=os.environ["LLM_GATEWAY_URL"],
         api_key="dummy",

@@ -44,8 +44,15 @@ trap cleanup EXIT SIGTERM SIGINT
     --unattended \
     --replace
 
+# The comment watcher and the CI-monitor dispatch loop are independent knobs so
+# a deployment can drive its own daily report without also intercepting
+# @amd-bot commands on sglang PRs. ENABLE_CI_MONITOR defaults to ENABLE_WATCHER
+# so existing deployments keep both.
+ENABLE_WATCHER="${ENABLE_WATCHER:-}"
+ENABLE_CI_MONITOR="${ENABLE_CI_MONITOR:-$ENABLE_WATCHER}"
+
 # Clone/update bot repo once (shared by watcher)
-if [ "${ENABLE_WATCHER:-}" = "true" ]; then
+if [ "$ENABLE_WATCHER" = "true" ]; then
     BOT_REPO_URL="https://${GH_PAT}@github.com/${REPO_PATH}.git"
     if [ -d /tmp/bot/.git ]; then
         echo "Syncing bot repo to origin/main..."
@@ -60,7 +67,7 @@ if [ "${ENABLE_WATCHER:-}" = "true" ]; then
     pip install -q -r /tmp/bot/requirements.txt 2>/dev/null
 fi
 
-if [ "${ENABLE_WATCHER:-}" = "true" ]; then
+if [ "$ENABLE_WATCHER" = "true" ]; then
     WATCHER_TOKEN="${BOT_PAT:-$GH_PAT}"
     echo "Starting comment watcher daemon (poll every ${POLL_INTERVAL:-15}s)..."
     (
@@ -73,7 +80,9 @@ if [ "${ENABLE_WATCHER:-}" = "true" ]; then
             sleep 15
         done
     ) &
+fi
 
+if [ "$ENABLE_CI_MONITOR" = "true" ]; then
     echo "Starting CI monitor trigger (every 30 minutes)..."
     (
         while true; do
