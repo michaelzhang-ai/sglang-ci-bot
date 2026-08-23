@@ -12,9 +12,9 @@ All public-facing comments are posted under the dedicated **[amd-bot](https://gi
 
 | Feature | Script | Trigger | What it does |
 |---------|--------|---------|--------------|
-| Cron CI Monitor | `ensure_daily_issue.py` (prepare step) + `monitor_ci.py` (per-workflow matrix) | Runner-1 dispatches `ci-monitor.yml` every 30min | `ci-monitor.yml` first runs a `prepare` job that calls `ensure_daily_issue.py` (idempotently creates today's daily issue with the Daily Cross-Workflow Summary placeholder seeded in its body), then fans out a `monitor` matrix job — **max-parallel 8, one entry per workflow file** in `MONITORED_WORKFLOWS`. Each matrix job analyses its workflow's failures with historical comparison and regression detection, then posts/PATCHes a per-workflow comment on the daily issue. Gate/finish jobs are automatically skipped. For `nightly-amd-mi355x-disagg.yml`, per-job analysis pre-downloads the run's `mi355x-*` artifacts and unpacks bundled prefill/decode/router logs into `.ci-context/mi355x-artifacts` before invoking the agent. Reports group failures into **symptom clusters** with **confidence-labeled hypotheses** rather than asserted root causes. After its workflow has any new failure analysed, the matrix job auto-invokes `daily_cross_workflow_summary.build_and_publish_summary()` to refresh the Daily Cross-Workflow Summary pinned in the issue body. |
+| Cron CI Monitor | `ensure_daily_issue.py` (prepare step) + `monitor_ci.py` (per-workflow matrix) | `ci-monitor.yml`'s own `schedule` cron once a day (`20 2 * * *` UTC), plus runner-1 dispatching it every 30min | `ci-monitor.yml` first runs a `prepare` job that calls `ensure_daily_issue.py` (idempotently creates today's daily issue with the Daily Cross-Workflow Summary placeholder seeded in its body), then fans out a `monitor` matrix job — **max-parallel 8, one entry per workflow file** in `MONITORED_WORKFLOWS`. Each matrix job analyses its workflow's failures with historical comparison and regression detection, then posts/PATCHes a per-workflow comment on the daily issue. Gate/finish jobs are automatically skipped. For `nightly-amd-mi355x-disagg.yml`, per-job analysis pre-downloads the run's `mi355x-*` artifacts and unpacks bundled prefill/decode/router logs into `.ci-context/mi355x-artifacts` before invoking the agent. Reports group failures into **symptom clusters** with **confidence-labeled hypotheses** rather than asserted root causes. After its workflow has any new failure analysed, the matrix job auto-invokes `daily_cross_workflow_summary.build_and_publish_summary()` to refresh the Daily Cross-Workflow Summary pinned in the issue body. |
 | Daily Cross-Workflow Summary | `daily_cross_workflow_summary.py` | Auto-invoked by each `monitor_ci.py` matrix job that produced new failures (gated by `BUILD_DAILY_SUMMARY` env, default enabled); also CLI | Aggregates per-job analyses from ALL monitored workflows into a single rolling **Daily Cross-Workflow Summary** **pinned in the daily issue's body** (above all per-workflow comments) between `<!-- daily-cross-workflow-summary:start -->` / `<!-- daily-cross-workflow-summary:end -->` placeholder markers. Deduplicates symptom clusters across workflows (same cluster spanning `pr-test-amd` + `nightly-test-amd` is one entry, not two). PATCHes the issue body in place, replacing only the content between the placeholders (matching the legacy `ci-monitor-daily-status-board` markers too, so older issues migrate in place). Legacy summary *comments* from before this move are auto-deleted by `_cleanup_legacy_summary_comments`. |
-| Failure Trackers (per workflow) | `failure_tracker.py` | A `finalize` job in `ci-monitor.yml` (`needs: monitor`), once per 30-min tick after the whole matrix completes | Maintains **one long-lived issue per tracked workflow on the upstream `sgl-project/sglang` repo** (`[Failure Tracker] <workflow>`), each a persistent fact record of every test failure that workflow has shown — one unified, transparent place to see every AMD CI failure and how long it has been red. **Content** (which tests failed, error, cluster, regression status) is found by a small, dedicated agent task (`Task: Failure Tracker Data`) reading the SAME per-job analyses the daily report is built from — kept consistent with the daily report, and decoupled from the giant Daily Cross-Workflow Summary prose (the earlier "append JSON to the summary output" approach was observed to silently drop the block). A deterministic fallback parses the per-job `### Failed Tests` tables if the agent is unavailable. **State** (each failure's `first_seen` date, duration, dedup-by-test) is owned by deterministic Python — a hidden JSON blob in the issue body, NEVER recomputed — so a test red for months keeps an accurate "Broken since" date independent of the daily report's short lookback or GitHub's log retention. Config-driven via `TRACKED_WORKFLOWS`: add a workflow → it gets its own ledger issue. |
+| Failure Trackers (per workflow) | `failure_tracker.py` | A `finalize` job in `ci-monitor.yml` (`needs: monitor`), once per tick after the whole matrix completes — **only on the instance where the `ENABLE_FAILURE_TRACKER` repo variable is `true`** | Maintains **one long-lived issue per tracked workflow on the upstream `sgl-project/sglang` repo** (`[Failure Tracker] <workflow>`), each a persistent fact record of every test failure that workflow has shown — one unified, transparent place to see every AMD CI failure and how long it has been red. **Content** (which tests failed, error, cluster, regression status) is found by a small, dedicated agent task (`Task: Failure Tracker Data`) reading the SAME per-job analyses the daily report is built from — kept consistent with the daily report, and decoupled from the giant Daily Cross-Workflow Summary prose (the earlier "append JSON to the summary output" approach was observed to silently drop the block). A deterministic fallback parses the per-job `### Failed Tests` tables if the agent is unavailable. **State** (each failure's `first_seen` date, duration, dedup-by-test) is owned by deterministic Python — a hidden JSON blob in the issue body, NEVER recomputed — so a test red for months keeps an accurate "Broken since" date independent of the daily report's short lookback or GitHub's log retention. Config-driven via `TRACKED_WORKFLOWS`: add a workflow → it gets its own ledger issue. |
 | On-Demand Analysis | `analyze_url.py` | `workflow_dispatch` (Actions tab) | Paste a GitHub Actions run or job URL, bot creates an issue with analysis results. Supports both run URLs (all failed jobs) and single job URLs. |
 | PR Code Review | `review_pr.py` | `@amd-bot review` or manual | Checks out PR branch, reviews with full codebase context, posts structured review |
 | CI Status Check | `check_ci_for_pr.py` | `@amd-bot ci-status` or manual | Checks all CI for a PR, separates CI completeness from executed failure attribution, determines if executed failures are PR-related, and warns when required downstream jobs were fast-fail skipped or when the AMD test covering a changed code path did not run |
@@ -310,6 +310,9 @@ In `bingxche/sglang-ci-bot` > Settings > Secrets and variables > Actions:
 | Variable | Value |
 |----------|-------|
 | `USE_AGENT` | `true` to enable agent mode in workflow-triggered reviews and CI checks |
+| `ENABLE_FAILURE_TRACKER` | `true` to let this instance write the shared per-workflow Failure Tracker issues on upstream `sgl-project/sglang`. Set on **exactly one** deployment; leave unset everywhere else (see [Running your own fork](#running-your-own-fork)) |
+| `ENABLE_COMMENT_WATCHER` | `true` to let `comment-watcher.yml`'s 5-minute cron claim and dispatch `@amd-bot` commands from sglang PRs. Set on **exactly one** deployment; leave unset everywhere else |
+| `CI_MONITOR_RUNS_ON` | JSON array of runner labels for every `ci-monitor.yml` job (default `["self-hosted","amd-internal"]`). Set to `["ubuntu-latest"]` to run the daily tick on GitHub-hosted runners |
 
 ### Deploy self-hosted runners
 
@@ -347,9 +350,11 @@ bash runner/setup.sh \
 | `--llm-gateway-url` | AMD LLM Gateway endpoint URL |
 | `--claude-env` | Path to env file with all Claude Code variables (e.g. `.secrets/claude.env`) |
 | `--use-agent` | Enable Claude Code agent mode |
+| `--no-watcher` | Don't run the comment watcher daemon on runner-1 (the CI monitor dispatch loop still runs) |
+| `--no-ci-monitor` | Don't run the 30-minute `ci-monitor.yml` dispatch loop on runner-1 (`ci-monitor.yml`'s own daily cron still fires) |
 | `--image` | Pull image from registry instead of building |
 | `--build` | Force local build from Dockerfile |
-| `--repo` | GitHub repo (default: `bingxche/sglang-ci-bot`) |
+| `--repo` | GitHub repo to register the runners on (default: auto-detected from this checkout's `origin` remote, so deploying from a fork targets the fork; falls back to `bingxche/sglang-ci-bot`) |
 | `--count` | Number of runner containers (default: 10) |
 | `--name` | Runner name prefix (default: `amd-ci-bot-runner`) |
 
@@ -378,6 +383,74 @@ Containers are fully isolated from the host. The only host files mounted are:
 - `sglang-runner-toolcache-{i}` — Docker named volume for GitHub Actions tool cache
 
 The bot code is cloned by `entrypoint.sh` to `/tmp/bot`. The sglang repo (`/workspace/sglang`) is cloned on-demand by `ensure_sglang_repo()` in `utils.py` when agent mode is invoked. Each agent runs in an isolated git worktree (`/workspace/sglang-wt-{tag}`) created by `create_agent_worktree(tag, head_sha)`, checked out to the exact CI commit being analyzed. Concurrent agents (up to 2 in agent mode) cannot interfere with each other. All analysis happens entirely inside the container.
+
+---
+
+## Running your own fork
+
+A fork of this repo is inert until you opt in, and that is deliberate: the bot's
+side effects (PR comments on `sgl-project/sglang`, the shared upstream Failure
+Tracker issues) are global, so a second live instance would collide with the
+production one rather than run beside it. Bring up only what you need.
+
+### Daily CI report only (no `@amd-bot` commands)
+
+This is the common case: you want your fork to generate and update its own daily
+CI issue, and nothing else.
+
+1. **Enable Actions.** GitHub disables a fork's workflows on creation, and
+   disables `schedule` triggers on forks specifically, so the daily cron will not
+   fire until you accept the banner on the fork's **Actions** tab.
+2. **Enable Issues.** Forks are created with the Issues tab **off**, and the
+   daily report *is* an issue — `ensure_daily_issue.py` cannot create anything
+   without it. Settings > General > Features > Issues.
+3. **Add the `GH_PAT` secret.** Any token with `repo` scope on the fork. Unlike
+   the production deployment this does not have to be amd-bot's PAT: with the
+   `@amd-bot` features left off, this token only ever creates and edits issues on
+   your own fork, so the daily report is authored by whoever owns the token.
+4. **Leave `ENABLE_COMMENT_WATCHER` and `ENABLE_FAILURE_TRACKER` unset.** These
+   two variables are what keep a fork from reaching outside itself — see
+   [Why the fork gates exist](#why-the-fork-gates-exist).
+5. **Pick where the jobs run** with the `CI_MONITOR_RUNS_ON` variable (JSON array
+   of runner labels, default `["self-hosted","amd-internal"]`):
+   - Own AMD hosts: leave it unset and deploy runners as in [Deploy self-hosted
+     runners](#deploy-self-hosted-runners), passing `--no-watcher` so runner-1
+     drives the CI monitor without also intercepting PR commands.
+   - No hosts: set it to `["ubuntu-latest"]` and the daily tick runs on
+     GitHub-hosted runners, free on a public repo.
+6. **Add the LLM Gateway secrets** (`LLM_GATEWAY_KEY`, `LLM_GATEWAY_URL`) when you
+   have them. Without them the tick still runs: the daily issue is created and
+   refreshed, and each workflow's failures are left unanalysed and unmarked, so
+   they are picked up on the first tick after the credentials appear. Agent mode
+   additionally needs the Claude Code CLI, which only exists in the runner image
+   — a GitHub-hosted runner always takes the API path.
+
+Trigger it once from the Actions tab ("Cron CI Monitor" > Run workflow) rather
+than waiting for 02:20 UTC, and confirm an issue titled
+`[CI Monitor] Daily Report - <date>` appears on your fork.
+
+### Why the fork gates exist
+
+| Side effect | Gate | What happens without the gate |
+|---|---|---|
+| Per-workflow Failure Tracker issues on `sgl-project/sglang` | `ENABLE_FAILURE_TRACKER` repo variable, checked by `ci-monitor.yml`'s `finalize` job | These issues are shared by every deployment. Two instances PATCH the same bodies from their own hidden state blobs, so each overwrites the other's ledger and the `first_seen` dates stop meaning anything. |
+| Dispatching `@amd-bot` commands from sglang PRs | `ENABLE_COMMENT_WATCHER` repo variable, checked by `comment-watcher.yml`'s `watch` job | The `rocket` reaction that makes the watcher idempotent is keyed on `BOT_LOGIN`, so it is shared across deployments posting as that account. The second instance does not duplicate a command — it *claims* it, then serves the review from a fork nobody is reading. With a different `BOT_LOGIN` the claim is not shared at all and both instances answer. |
+| Registering runners on the wrong repo | `runner/setup.sh` defaults `--repo` to this checkout's `origin` remote | Deploying from a fork checkout used to register the containers against `bingxche/sglang-ci-bot`, adding runners to the production pool. |
+
+The daily issue itself needs no gate: `ci-monitor.yml` passes
+`--bot-repo ${{ github.repository }}`, so every instance reads and writes only
+its own repo's issues.
+
+### Actions usage
+
+Both the daily cron and the runner-1 dispatch loop are free on a public fork:
+standard GitHub-hosted runners and self-hosted runners are not billed for public
+repositories. One daily tick is `1` prepare job + `1` monitor job per entry in
+`DEFAULT_WORKFLOWS` (8 today) = **9 jobs/day**, with `finalize` skipped while
+`ENABLE_FAILURE_TRACKER` is unset. Switching the cron to the upstream 30-minute
+cadence multiplies that by 48. If you make the fork **private**, those minutes
+start being deducted from the account's monthly allowance, and the 8-way matrix
+is what makes that expensive.
 
 ---
 
@@ -475,7 +548,7 @@ Each workflow report includes the sglang commit (`head_sha`) in the header, and 
 | `pr-review.yml` | Per comment ID | Duplicate dispatches cancelled |
 | `ci-status-check.yml` | Per comment ID | Duplicate dispatches cancelled |
 | `comment-watcher.yml` | Single instance | One watcher at a time |
-| `ci-monitor.yml` | Single instance at workflow level (`group: ci-monitor`); inside each dispatch, `prepare` job runs once → `monitor` matrix (max-parallel 8, one per workflow file) → `finalize` job runs once (`needs: monitor`, `if: always()`) | Only one monitor *dispatch* runs at a time; within it, the prepare step seeds the daily issue once, then up to 8 per-workflow analyses run in parallel (each producing failures independently rebuilds the Daily Cross-Workflow Summary — last writer wins, convergent). After all matrix jobs finish, the single `finalize` job updates the upstream per-workflow Failure Trackers (`failure_tracker.py`) once, seeing the fully-populated daily issue. |
+| `ci-monitor.yml` | Single instance at workflow level (`group: ci-monitor`); inside each run, `prepare` job runs once → `monitor` matrix (max-parallel 8, one per workflow file) → `finalize` job runs once (`needs: monitor`, `if: always() && vars.ENABLE_FAILURE_TRACKER == 'true'`) | Only one monitor *run* executes at a time, whether it came from the daily `schedule` cron or from a runner-1 `workflow_dispatch` — the shared group makes them queue, so the two triggers can coexist without double-analysing anything. Within a run, the prepare step seeds the daily issue once, then up to 8 per-workflow analyses run in parallel (each producing failures independently rebuilds the Daily Cross-Workflow Summary — last writer wins, convergent). After all matrix jobs finish, the single `finalize` job updates the upstream per-workflow Failure Trackers (`failure_tracker.py`) once, seeing the fully-populated daily issue — but only on the instance that owns those shared upstream issues. |
 | `analyze-ci.yml` | Per run ID | Independent analyses run concurrently |
 
 The comment watcher uses **reaction-based idempotency**: before dispatching, it checks if amd-bot has already added a `rocket` reaction to the comment. Both daemon and cron watcher share this mechanism, so running both simultaneously is safe.
@@ -796,13 +869,17 @@ sglang-ci-bot/
     local_run.sh            Local dev runner
     verify_agent.sh         Claude Code agent verification
   .github/workflows/
-    ci-monitor.yml          CI monitor — workflow_dispatch only (no cron in the
-                              workflow itself). Runner-1's entrypoint.sh
-                              dispatches it every 30 minutes via API.
+    ci-monitor.yml          CI monitor — daily `schedule` cron (20 2 * * *
+                              UTC) plus workflow_dispatch; runner-1's
+                              entrypoint.sh additionally dispatches it every
+                              30 minutes via API. Both triggers share the
+                              `ci-monitor` concurrency group.
                               Layout: prepare job (resolve workflow list +
                               ensure_daily_issue.py) → monitor matrix job
                               (max-parallel 8, one entry per workflow file
-                              from MONITORED_WORKFLOWS).
+                              from MONITORED_WORKFLOWS) → finalize job
+                              (failure_tracker.py, gated on the
+                              ENABLE_FAILURE_TRACKER repo variable).
     analyze-ci.yml          On-demand URL analysis (workflow_dispatch)
     ci-status-check.yml     PR CI check (repository_dispatch + workflow_dispatch)
     pr-review.yml           PR review (repository_dispatch + workflow_dispatch)
@@ -813,8 +890,12 @@ sglang-ci-bot/
     setup.sh                Multi-runner deployment (default 10 containers)
     entrypoint.sh           Container entrypoint (register + daemons + bot repo
                               clone). Runner-1 only: starts watch_comments.py
-                              --daemon AND a 30-minute loop that POSTs to
-                              ci-monitor.yml/dispatches.
+                              --daemon when ENABLE_WATCHER=true, and a
+                              30-minute loop that POSTs to
+                              ci-monitor.yml/dispatches when
+                              ENABLE_CI_MONITOR=true. The two are separate
+                              knobs so a deployment can drive its own daily
+                              report without intercepting PR commands.
   .state/                   Persisted state files (gitignored)
   .secrets/                 Local secret files (gitignored): claude.env, llm_gateway_key, gh_pat
   requirements.txt          Python dependencies: anthropic, httpx, requests
@@ -843,6 +924,8 @@ sglang-ci-bot/
 | `ANTHROPIC_CUSTOM_HEADERS` | Agent mode | Gateway auth header (`Ocp-Apim-Subscription-Key: <key>`) |
 | `ANTHROPIC_MODEL` | Agent mode | Claude Code model selector (e.g. `opus[1m]`) |
 | `COMMENT_AUTHOR` | Workflows | Set by watcher, displayed in comment header |
+| `ENABLE_WATCHER` | `runner/entrypoint.sh` | `true` on runner-1 to start the comment watcher daemon (set by `setup.sh` unless `--no-watcher`) |
+| `ENABLE_CI_MONITOR` | `runner/entrypoint.sh` | `true` on runner-1 to start the 30-minute `ci-monitor.yml` dispatch loop. Defaults to `ENABLE_WATCHER` when unset, so pre-existing deployments keep both |
 
 ---
 
@@ -881,5 +964,7 @@ CI monitor dispatch: `entrypoint.sh` dispatches `ci-monitor.yml` via `workflow_d
 
 ### Schedules
 
-- `ci-monitor.yml`: triggered by runner-1 every 30 minutes via `workflow_dispatch`
+- `ci-monitor.yml`: `'20 2 * * *'` (daily at 02:20 UTC) from the workflow's own `schedule` trigger, **and** dispatched by runner-1 every 30 minutes via `workflow_dispatch`. The daily cron is what guarantees the day's issue is generated and filled even when no runner-1 daemon is deployed; the 30-minute dispatch loop is what keeps it fresh through the day. Both paths share the `ci-monitor` concurrency group, so they queue instead of colliding. To run purely on GitHub's timer at the upstream cadence, change the cron to `'*/30 * * * *'`; to disable the cron and rely only on runner-1, delete the `schedule` block.
 - `comment-watcher.yml`: `'*/5 * * * *'` (every 5 minutes)
+
+02:20 UTC is chosen so the previous day's monitored AMD runs — MI355X disagg (07:00), nightly docker (12:00) and the nightly AMD suites (17:30) — have all finished and still fall inside `monitor_ci.py`'s default 24h lookback, making one tick a complete daily report.

@@ -16,6 +16,13 @@ concurrency:
 
 jobs:
   watch:
+    # The rocket-reaction claim that makes the watcher idempotent is keyed on
+    # BOT_LOGIN, so it is shared by every deployment posting as that account:
+    # a second instance does not duplicate a command, it *takes* it, and then
+    # serves the review from a repo nobody is watching. Set the
+    # ENABLE_COMMENT_WATCHER repo variable on the one instance that owns PR
+    # commands; forks leave it unset so enabling Actions stays harmless.
+    if: ${{ vars.ENABLE_COMMENT_WATCHER == 'true' }}
     runs-on: [self-hosted, amd-internal]
     permissions:
       contents: write

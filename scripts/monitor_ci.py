@@ -36,6 +36,7 @@ import requests
 
 from utils import (
     REPO,
+    LLMGatewayNotConfigured,
     analyze_job_api,
     analyze_job_with_agent,
     claude_code_available,
@@ -1129,7 +1130,18 @@ def monitor_workflow(
                     except Exception:
                         log.warning("Failed to clean up worktree %s", wt)
         else:
-            client = create_anthropic_client()
+            try:
+                client = create_anthropic_client()
+            except LLMGatewayNotConfigured as exc:
+                # Leave these job ids unprocessed so they are picked up once
+                # credentials exist, and let the caller still publish the
+                # daily issue rather than failing the whole tick.
+                log.warning(
+                    "  %s — skipping analysis of %d failed job(s); the daily "
+                    "issue is still created and refreshed.",
+                    exc, len(jobs_to_analyze),
+                )
+                return [], [], pending_info
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
                     executor.submit(

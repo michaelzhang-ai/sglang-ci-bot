@@ -1,6 +1,11 @@
 name: Cron CI Monitor
 
 on:
+  schedule:
+    # Daily tick. 02:20 UTC is late enough that the previous day's monitored
+    # AMD runs (07:00 MI355X disagg, 12:00 nightly docker, 17:30 nightly
+    # tests) have finished and still fall inside the 24h lookback window.
+    - cron: '20 2 * * *'
   workflow_dispatch:
     inputs:
       hours_back:
@@ -47,7 +52,7 @@ env:
 
 jobs:
   prepare:
-    runs-on: [self-hosted, amd-internal]
+    runs-on: ${{ fromJSON(vars.CI_MONITOR_RUNS_ON || '["self-hosted","amd-internal"]') }}
     permissions:
       issues: write
       contents: read
@@ -85,7 +90,7 @@ jobs:
 
   monitor:
     needs: prepare
-    runs-on: [self-hosted, amd-internal]
+    runs-on: ${{ fromJSON(vars.CI_MONITOR_RUNS_ON || '["self-hosted","amd-internal"]') }}
     permissions:
       issues: write
       contents: read
@@ -150,8 +155,12 @@ jobs:
 
   finalize:
     needs: monitor
-    if: always()
-    runs-on: [self-hosted, amd-internal]
+    # Failure Trackers are long-lived issues on the upstream sgl-project/sglang
+    # repo, shared by every deployment of this bot. Only the instance that owns
+    # them may write, or two instances overwrite each other's ledgers. Set the
+    # ENABLE_FAILURE_TRACKER repo variable on that instance; forks leave it unset.
+    if: ${{ always() && vars.ENABLE_FAILURE_TRACKER == 'true' }}
+    runs-on: ${{ fromJSON(vars.CI_MONITOR_RUNS_ON || '["self-hosted","amd-internal"]') }}
     permissions:
       issues: write
       contents: read
